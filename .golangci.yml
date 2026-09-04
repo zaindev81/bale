@@ -1,0 +1,53 @@
+version: "2"
+linters:
+  enable:
+    # errorlint: catches errors compared with == instead of errors.Is and
+    # %v-formatted wrapping that loses the cause.
+    - errorlint
+    # gosec: static security analysis. bale downloads and unpacks untrusted
+    # archives, so the SSRF, path-traversal and decompression checks matter.
+    - gosec
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.ReadCloser).Close
+        - fmt.Fprintf
+        - fmt.Fprint
+        - fmt.Fprintln
+    gosec:
+      excludes:
+        # G115 (integer conversion overflow) fires on the tar header mode
+        # conversion, which is masked to 0o777 immediately afterwards.
+        - G115
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+
+      # Test files only: G401/G505 fire on fixtures that use sha1 on
+      # purpose, to prove bale refuses sha1 integrity metadata, and G104
+      # fires on httptest handlers where a write error has nowhere to go.
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G104|G401|G505"
+
+      # G304: "file path provided as taint input". Every path bale opens is
+      # built from a package name that resolver.ValidateName has already
+      # rejected traversal in, and joined through tarball.safeJoin, which
+      # re-checks that the result stays under the destination. A package
+      # manager cannot avoid opening variable paths.
+      - linters:
+          - gosec
+        text: "G304"
+
+      # G301/G306: directory 0755 / file 0644 permissions. These are the
+      # permissions npm itself creates node_modules and package.json with;
+      # tightening them would make installed packages unreadable to other tools.
+      - linters:
+          - gosec
+        text: "G301"
+      - linters:
+          - gosec
+        text: "G306"
