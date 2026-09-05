@@ -768,6 +768,116 @@ func TestInstallAllCompletesIncompleteTree(t *testing.T) {
 	}
 }
 
+func TestInstallAllRepairsDirectVersionDrift(t *testing.T) {
+	for _, tt := range []struct {
+		name, pkg, installed, wanted, resolved string
+		dev                                    bool
+	}{
+		{"upgrade", "a", "1.0.0", "^2.0.0", "2.0.0", false},
+		{"downgrade", "a", "2.0.0", "1.0.0", "1.0.0", false},
+		{"dev dependency", "a", "1.0.0", "^2.0.0", "2.0.0", true},
+		{"scoped dependency", "@scope/a", "1.0.0", "^2.0.0", "2.0.0", false},
+		{"invalid installed version", "a", "broken", "^2.0.0", "2.0.0", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			m := &manifest.Manifest{Name: "proj", Dependencies: map[string]string{tt.pkg: tt.wanted}}
+			if tt.dev {
+				m.DevDependencies, m.Dependencies = m.Dependencies, nil
+			}
+			writeManifest(t, dir, m)
+			installedDir := filepath.Join(dir, "node_modules", tt.pkg)
+			if err := os.MkdirAll(installedDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			// The obsolete dependency must not be resolved from the old manifest.
+			writeManifest(t, installedDir, &manifest.Manifest{
+				Name: tt.pkg, Version: tt.installed, Dependencies: map[string]string{"obsolete": "*"},
+			})
+			pkgs := map[string][]fakePackage{
+				tt.pkg: {{name: tt.pkg, version: tt.resolved, deps: map[string]string{"b": "^1.0.0"}}},
+				"b":    {{name: "b", version: "1.0.0"}},
+			}
+			before, err := os.ReadFile(filepath.Join(dir, "package.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out, errOut bytes.Buffer
+			in, _ := newTestInstaller(t, dir, pkgs, nil, &out, &errOut)
+			if err := in.InstallAll(context.Background()); err != nil {
+				t.Fatalf("InstallAll: %v", err)
+			}
+			if got := readInstalledVersion(t, dir, tt.pkg); got != tt.resolved {
+				t.Errorf("installed version = %q, want %q", got, tt.resolved)
+			}
+			if got := readInstalledVersion(t, dir, "b"); got != "1.0.0" {
+				t.Errorf("new transitive dependency version = %q, want 1.0.0", got)
+			}
+			after, err := os.ReadFile(filepath.Join(dir, "package.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Error("InstallAll changed the project manifest")
+			}
+			if errOut.Len() != 0 {
+				t.Errorf("unexpected warnings: %s", &errOut)
+			}
+		})
+	}
+}
+
+func TestInstallAllReusesCompatibleTreeOffline(t *testing.T) {
+	for _, rng := range []string{"^1.0.0", "1.0.0", "*", "", "latest"} {
+		t.Run(rng, func(t *testing.T) {
+			dir := t.TempDir()
+			var out, errOut bytes.Buffer
+			in, fr := newTestInstaller(t, dir, fakePkgs(), nil, &out, &errOut)
+			if err := in.Add(context.Background(), []string{"a@1.0.0"}); err != nil {
+				t.Fatal(err)
+			}
+			writeManifest(t, dir, &manifest.Manifest{Dependencies: map[string]string{"a": rng}})
+			fr.srv.Close()
+			out.Reset()
+			if err := in.InstallAll(context.Background()); err != nil {
+				t.Fatalf("InstallAll with registry offline: %v", err)
+			}
+			if out.Len() != 0 || errOut.Len() != 0 {
+				t.Errorf("expected silent reuse, got output %q and warnings %q", &out, &errOut)
+			}
+		})
+	}
+}
+
+func TestInstallAllFailedRepairPreservesExistingPackages(t *testing.T) {
+	dir := t.TempDir()
+	var out, errOut bytes.Buffer
+	pkgs := fakePkgs()
+	pkgs["a"] = append(pkgs["a"], fakePackage{
+		name: "a", version: "2.0.0", deps: map[string]string{"missing": "^1.0.0"},
+	})
+	in, fr := newTestInstaller(t, dir, pkgs, nil, &out, &errOut)
+	if err := in.Add(context.Background(), []string{"a@1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	writeManifest(t, dir, &manifest.Manifest{Dependencies: map[string]string{"a": "^2.0.0"}})
+	fr.resetTarballLog()
+	out.Reset()
+	err := in.InstallAll(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("InstallAll error = %v, want missing dependency", err)
+	}
+	if got := readInstalledVersion(t, dir, "a"); got != "1.0.0" {
+		t.Errorf("failed repair replaced a with %q", got)
+	}
+	if got := readInstalledVersion(t, dir, "b"); got != "1.1.0" {
+		t.Errorf("failed repair changed b to %q", got)
+	}
+	if fr.tarballFetchedFor("a") || out.Len() != 0 {
+		t.Error("failed resolution should not start applying the repair")
+	}
+}
+
 func TestInstallUnsupportedSpec(t *testing.T) {
 	dir := t.TempDir()
 	writeManifest(t, dir, &manifest.Manifest{

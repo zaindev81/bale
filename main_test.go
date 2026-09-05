@@ -78,7 +78,7 @@ func TestRun(t *testing.T) {
 			name: "init twice reports the existing file",
 			args: []string{"init"},
 			setup: func(t *testing.T) {
-				if code := run([]string{"init"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+				if code := runPackageCLI([]string{"init"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 					t.Fatalf("setup init exit code = %d, want 0", code)
 				}
 			},
@@ -113,10 +113,10 @@ func TestRun(t *testing.T) {
 			}
 
 			var stdout, stderr bytes.Buffer
-			got := run(tt.args, &stdout, &stderr)
+			got := runPackageCLI(tt.args, &stdout, &stderr)
 
 			if got != tt.want {
-				t.Errorf("run(%q) = %d, want %d (stderr: %q)", tt.args, got, tt.want, stderr.String())
+				t.Errorf("runPackageCLI(%q) = %d, want %d (stderr: %q)", tt.args, got, tt.want, stderr.String())
 			}
 			if tt.wantStdout != "" && !strings.Contains(stdout.String(), tt.wantStdout) {
 				t.Errorf("stdout = %q, want it to contain %q", stdout.String(), tt.wantStdout)
@@ -146,8 +146,8 @@ func TestInitWritesValidManifest(t *testing.T) {
 	t.Chdir(dir)
 
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"init"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("run(init) = %d, want 0 (stderr: %q)", code, stderr.String())
+	if code := runPackageCLI([]string{"init"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("runPackageCLI(init) = %d, want 0 (stderr: %q)", code, stderr.String())
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, "package.json"))

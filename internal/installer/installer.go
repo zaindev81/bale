@@ -37,8 +37,9 @@ func New(dir string, reg *registry.Client) *Installer {
 
 // req is a single pending dependency requirement: install name at rng.
 type req struct {
-	name string
-	rng  string
+	name   string
+	rng    string
+	direct bool // declared by the project rather than another package
 }
 
 // step is one resolved package to download and extract.
@@ -104,7 +105,7 @@ func (in *Installer) Add(ctx context.Context, specs []string) error {
 		if err := resolver.ValidateName(name); err != nil {
 			return fmt.Errorf("add dependencies: %w", err)
 		}
-		queue = append(queue, req{name: name, rng: rng})
+		queue = append(queue, req{name: name, rng: rng, direct: true})
 		if _, dup := seen[name]; !dup {
 			seen[name] = req{name: name, rng: rng}
 			order = append(order, name)
@@ -145,7 +146,8 @@ func (in *Installer) Add(ctx context.Context, specs []string) error {
 
 // InstallAll installs everything listed in package.json dependencies and
 // devDependencies, including transitive dependencies missing from an
-// incomplete node_modules tree.
+// incomplete node_modules tree. Direct dependencies are re-resolved when
+// their installed versions do not satisfy the declared semver ranges.
 func (in *Installer) InstallAll(ctx context.Context) error {
 	m, err := manifest.Load(in.manifestPath())
 	if errors.Is(err, fs.ErrNotExist) {
@@ -164,6 +166,9 @@ func (in *Installer) InstallAll(ctx context.Context) error {
 		return err
 	}
 	queue = append(queue, devQueue...)
+	for i := range queue {
+		queue[i].direct = true
+	}
 
 	if _, err := in.install(ctx, queue, nil); err != nil {
 		return err
@@ -212,7 +217,8 @@ func (in *Installer) install(ctx context.Context, queue []req, topLevel map[stri
 // re-resolved and reinstalled, like `npm install foo` does; transitive
 // requirements reuse whatever is already present in node_modules,
 // first-wins, and their own dependencies are queued too so that an
-// interrupted or hand-deleted tree is completed.
+// interrupted or hand-deleted tree is completed. Direct dependencies from
+// InstallAll are reused only if compatible with their declared ranges.
 func (in *Installer) resolve(ctx context.Context, queue []req, topLevel map[string]bool) (*plan, error) {
 	pl := &plan{
 		installed: make(map[string]string),
@@ -238,12 +244,14 @@ func (in *Installer) resolve(ctx context.Context, queue []req, topLevel map[stri
 		// Transitive requirements reuse whatever is already in
 		// node_modules, if present, even if it doesn't satisfy this
 		// particular range (only a warning is emitted). Top-level
-		// requests skip this and are always resolved fresh below.
+		// requests from Add skip this and are always resolved fresh below.
+		// InstallAll repairs direct dependencies that no longer satisfy
+		// package.json instead of keeping an incompatible version.
 		if !topLevel[r.name] {
 			m, err := in.preinstalled(r.name)
 			if err != nil {
 				fmt.Fprintf(in.errOut(), "warn: node_modules/%s/package.json is unreadable (%v); reinstalling\n", r.name, err)
-			} else if m != nil {
+			} else if m != nil && (!r.direct || compatible(m.Version, r.rng)) {
 				pl.installed[r.name] = m.Version
 				in.warnIfIncompatible(r.name, m.Version, r.rng)
 				reqs, err := depReqs(fmt.Sprintf("package %s@%s", r.name, m.Version), m.Dependencies)

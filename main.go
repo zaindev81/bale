@@ -1,4 +1,4 @@
-// Command bale is a minimal Node package manager.
+// Command bale manages Node.js versions and npm packages.
 package main
 
 import (
@@ -21,10 +21,12 @@ import (
 const usage = `bale - a minimal Node package manager
 
 Usage:
-  bale init                Create a new package.json in the current directory
-  bale install [pkg...]    Install dependencies from package.json, or add packages
-  bale i [pkg...]          Alias for install
-  bale help                Show this help message
+  bale pkg init                Create a new package.json in the current directory
+  bale pkg install [pkg...]    Install dependencies from package.json, or add packages
+  bale pkg i [pkg...]          Alias for install
+  bale pkg list               Show direct dependencies and their installed status
+  bale pkg ls                 Alias for list
+  bale pkg help                Show this help message
 
 Environment:
   BALE_REGISTRY   Override the npm registry URL (default https://registry.npmjs.org)
@@ -42,8 +44,8 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// run executes the CLI and returns the process exit code.
-func run(args []string, stdout, stderr io.Writer) int {
+// runPackages executes the legacy package manager under bale pkg.
+func runPackages(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -67,6 +69,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		err = runInstall(ctx, rest, stdout, stderr)
+	case "list", "ls":
+		if len(rest) == 1 && (rest[0] == "--help" || rest[0] == "-h") {
+			fmt.Fprint(stdout, usage)
+			return 0
+		}
+		if len(rest) > 0 {
+			fmt.Fprintln(stderr, "bale: list takes no arguments")
+			return 2
+		}
+		dir, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			err = fmt.Errorf("get working directory: %w", cwdErr)
+			break
+		}
+		in := installer.New(dir, nil)
+		in.Out = stdout
+		err = in.List()
 	default:
 		fmt.Fprint(stderr, usage)
 		return 2
